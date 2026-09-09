@@ -134,56 +134,131 @@ def save_message(
 
 
 # =========================
-# Get chat history
+# Helper to parse Appwrite row
 # =========================
 
-def get_chat_history(tables_db, user_number, context):
+def parse_row(row):
 
-    result = tables_db.list_rows(
-        database_id=APPWRITE_DATABASE_ID,
-        table_id=APPWRITE_TABLE_ID,
-        queries=[
-            Query.equal("user_number", [user_number]),
-            Query.order_asc("$createdAt"),
-            Query.limit(100)
-        ]
-    )
+    # In Appwrite TablesDB, attributes are at top-level of row dict.
+    # Support nested 'data' dict if present for backwards compatibility.
+    data = row.get("data") if isinstance(row.get("data"), dict) else row
+
+    role = data.get("role") or row.get("role")
+    message = data.get("message") or row.get("message")
+    user_number = data.get("user_number") or row.get("user_number")
+    message_id = data.get("message_id") or row.get("message_id")
+    created_at = row.get("$createdAt") or data.get("$createdAt", "")
+
+    return {
+        "role": role,
+        "message": message,
+        "user_number": user_number,
+        "message_id": message_id,
+        "created_at": created_at
+    }
+
+
+# =========================
+# Fetch recent messages
+# =========================
+
+def fetch_recent_messages(tables_db, user_number, context):
+
+    try:
+        result = tables_db.list_rows(
+            database_id=APPWRITE_DATABASE_ID,
+            table_id=APPWRITE_TABLE_ID,
+            queries=[
+                Query.equal("user_number", [user_number]),
+                Query.order_desc("$createdAt"),
+                Query.limit(30)
+            ]
+        )
+    except Exception as query_err:
+        context.log(
+            f"Query with user_number and order_desc failed ({str(query_err)}), falling back"
+        )
+        result = tables_db.list_rows(
+            database_id=APPWRITE_DATABASE_ID,
+            table_id=APPWRITE_TABLE_ID,
+            queries=[
+                Query.limit(100)
+            ]
+        )
+
+    raw_rows = result.get("rows", [])
+    parsed_rows = [parse_row(r) for r in raw_rows]
+
+    # Filter to only this user's messages
+    user_rows = [
+        r for r in parsed_rows
+        if not r["user_number"] or str(r["user_number"]) == str(user_number)
+    ]
+
+    return user_rows
+
+
+# =========================
+# Build chat history
+# =========================
+
+def build_chat_history(user_rows, current_message_id, context):
 
     history = []
 
-    for row in result.get("rows", []):
+    for item in user_rows:
 
-        data = row.get("data", {})
+        # Exclude the current incoming message if already in the list
+        if current_message_id and item.get("message_id") == current_message_id:
+            continue
 
-        role = data.get("role")
-        message = data.get("message")
+        role = item.get("role")
+        message = item.get("message")
 
         # Only valid AI roles
         if role not in ["user", "assistant", "system", "developer"]:
-            context.log(
-                f"Skipping invalid role: {role}"
-            )
             continue
 
         if not message:
             continue
 
-        history.append({
-            "role": role,
-            "message": message,
-            "created_at": row.get("$createdAt", "")
-        })
+        history.append(item)
+
+    # Sort chronologically from oldest to newest
+    history.sort(key=lambda x: x.get("created_at", ""))
+
+    # Deduplicate consecutive identical messages or duplicate message IDs
+    seen_message_ids = set()
+    clean_history = []
+    for item in history:
+        msg_id = item.get("message_id")
+        if msg_id:
+            if msg_id in seen_message_ids:
+                continue
+            seen_message_ids.add(msg_id)
+
+        if (
+            clean_history
+            and clean_history[-1]["role"] == item["role"]
+            and clean_history[-1]["message"] == item["message"]
+        ):
+            continue
+
+        clean_history.append(item)
+
+    # Keep last 20 messages for context
+    trimmed_history = clean_history[-20:]
 
     context.log(
-        f"History found for {user_number}: {len(history)} messages"
+        f"History found for user: {len(trimmed_history)} messages"
     )
 
-    for item in history:
+    for item in trimmed_history:
         context.log(
             f"HISTORY → {item['role']}: {item['message']}"
         )
 
-    return history[-20:]
+    return trimmed_history
 
 
 # =========================
@@ -298,12 +373,42 @@ def main(context):
 
 
         # -------------------------
-        # Get previous history
+        # Fetch recent messages
         # -------------------------
 
-        history = get_chat_history(
+        recent_messages = fetch_recent_messages(
             tables_db,
             user_number,
+            context
+        )
+
+
+        # -------------------------
+        # Check duplicate webhook
+        # -------------------------
+
+        is_duplicate = any(
+            r.get("message_id") == whatsapp_message_id
+            for r in recent_messages
+        )
+
+        if is_duplicate:
+            context.log(
+                f"Duplicate webhook detected for message_id {whatsapp_message_id}. Skipping."
+            )
+            return context.res.json({
+                "ok": True,
+                "status": "duplicate_skipped"
+            })
+
+
+        # -------------------------
+        # Build prior history
+        # -------------------------
+
+        history = build_chat_history(
+            recent_messages,
+            whatsapp_message_id,
             context
         )
 
