@@ -143,9 +143,9 @@ def get_chat_history(tables_db, user_number):
 
     history = []
 
-    for row in result.rows:
+    for row in result["rows"]:
 
-        data = row.data
+        data = row["data"]
 
         if data.get("user_number") == user_number:
 
