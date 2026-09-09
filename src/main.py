@@ -143,6 +143,8 @@ def get_chat_history(tables_db, user_number):
         database_id=APPWRITE_DATABASE_ID,
         table_id=APPWRITE_TABLE_ID,
         queries=[
+            Query.equal("user_number", [user_number]),
+            Query.order_asc("$createdAt"),
             Query.limit(100)
         ]
     )
@@ -153,17 +155,20 @@ def get_chat_history(tables_db, user_number):
 
         data = row.get("data", {})
 
-        if data.get("user_number") == user_number:
+        history.append({
+            "role": data.get("role"),
+            "message": data.get("message"),
+            "created_at": row.get("$createdAt", "")
+        })
 
-            history.append({
-                "role": data.get("role"),
-                "message": data.get("message"),
-                "created_at": row.get("$createdAt", "")
-            })
-
-    history.sort(
-        key=lambda x: x["created_at"]
+    context.log(
+        f"History found for {user_number}: {len(history)} messages"
     )
+
+    for item in history:
+        context.log(
+            f"HISTORY → {item['role']}: {item['message']}"
+        )
 
     return history[-20:]
 
