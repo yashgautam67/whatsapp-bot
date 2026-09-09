@@ -1,2 +1,3 @@
 openai
 azure-identity
+appwrite==13.6.1
