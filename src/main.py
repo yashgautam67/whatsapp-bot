@@ -155,9 +155,22 @@ def get_chat_history(tables_db, user_number, context):
 
         data = row.get("data", {})
 
+        role = data.get("role")
+        message = data.get("message")
+
+        # Only valid AI roles
+        if role not in ["user", "assistant", "system", "developer"]:
+            context.log(
+                f"Skipping invalid role: {role}"
+            )
+            continue
+
+        if not message:
+            continue
+
         history.append({
-            "role": data.get("role"),
-            "message": data.get("message"),
+            "role": role,
+            "message": message,
             "created_at": row.get("$createdAt", "")
         })
 
