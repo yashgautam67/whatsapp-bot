@@ -137,7 +137,7 @@ def save_message(
 # Get chat history
 # =========================
 
-def get_chat_history(tables_db, user_number):
+def get_chat_history(tables_db, user_number, context):
 
     result = tables_db.list_rows(
         database_id=APPWRITE_DATABASE_ID,
@@ -290,7 +290,8 @@ def main(context):
 
         history = get_chat_history(
             tables_db,
-            user_number
+            user_number,
+            context
         )
 
 
