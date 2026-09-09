@@ -112,7 +112,13 @@ def get_appwrite_database(context):
 # Save message
 # =========================
 
-def save_message(tables_db, user_number, role, message, message_id):
+def save_message(
+    tables_db,
+    user_number,
+    role,
+    message,
+    message_id
+):
 
     tables_db.create_row(
         database_id=APPWRITE_DATABASE_ID,
@@ -143,16 +149,16 @@ def get_chat_history(tables_db, user_number):
 
     history = []
 
-    for row in result["rows"]:
+    for row in result.get("rows", []):
 
-        data = row["data"]
+        data = row.get("data", {})
 
         if data.get("user_number") == user_number:
 
             history.append({
                 "role": data.get("role"),
                 "message": data.get("message"),
-                "created_at": row.created_at
+                "created_at": row.get("$createdAt", "")
             })
 
     history.sort(
@@ -225,7 +231,10 @@ def main(context):
         )
 
 
+        # -------------------------
         # Ignore status updates
+        # -------------------------
+
         if not message:
 
             return context.res.text(
@@ -234,7 +243,10 @@ def main(context):
             )
 
 
+        # -------------------------
         # Only text messages
+        # -------------------------
+
         if message.get("type") != "text":
 
             return context.res.text(
