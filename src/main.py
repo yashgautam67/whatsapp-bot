@@ -5,6 +5,11 @@ import urllib.request
 from openai import OpenAI
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 
+from appwrite.client import Client
+from appwrite.services.tables_db import TablesDB
+from appwrite.id import ID
+from appwrite.query import Query
+
 
 # =========================
 # Azure AI Foundry
@@ -45,6 +50,14 @@ WHATSAPP_API_URL = (
 
 
 # =========================
+# Appwrite Database
+# =========================
+
+APPWRITE_DATABASE_ID = os.environ["APPWRITE_DATABASE_ID"]
+APPWRITE_TABLE_ID = os.environ["APPWRITE_TABLE_ID"]
+
+
+# =========================
 # Send WhatsApp message
 # =========================
 
@@ -78,6 +91,78 @@ def send_whatsapp_message(to, text):
 
 
 # =========================
+# Appwrite Client
+# =========================
+
+def get_appwrite_database(context):
+
+    appwrite_key = context.req.headers.get("x-appwrite-key")
+
+    client = (
+        Client()
+        .set_endpoint(os.environ["APPWRITE_FUNCTION_API_ENDPOINT"])
+        .set_project(os.environ["APPWRITE_FUNCTION_PROJECT_ID"])
+        .set_key(appwrite_key)
+    )
+
+    return TablesDB(client)
+
+
+# =========================
+# Save message
+# =========================
+
+def save_message(tables_db, user_number, role, message, message_id):
+
+    tables_db.create_row(
+        database_id=APPWRITE_DATABASE_ID,
+        table_id=APPWRITE_TABLE_ID,
+        row_id=ID.unique(),
+        data={
+            "user_number": user_number,
+            "role": role,
+            "message": message,
+            "message_id": message_id
+        }
+    )
+
+
+# =========================
+# Get chat history
+# =========================
+
+def get_chat_history(tables_db, user_number):
+
+    result = tables_db.list_rows(
+        database_id=APPWRITE_DATABASE_ID,
+        table_id=APPWRITE_TABLE_ID,
+        queries=[
+            Query.limit(100)
+        ]
+    )
+
+    history = []
+
+    for row in result.rows:
+
+        data = row.data
+
+        if data.get("user_number") == user_number:
+
+            history.append({
+                "role": data.get("role"),
+                "message": data.get("message"),
+                "created_at": row.created_at
+            })
+
+    history.sort(
+        key=lambda x: x["created_at"]
+    )
+
+    return history[-20:]
+
+
+# =========================
 # Appwrite Function
 # =========================
 
@@ -96,21 +181,38 @@ def main(context):
         verify_token = os.environ.get("VERIFY_TOKEN")
 
         if mode == "subscribe" and token == verify_token:
-            context.log("WhatsApp webhook verification successful")
-            return context.res.text(challenge or "")
 
-        return context.res.text("Forbidden", 403)
+            context.log(
+                "WhatsApp webhook verification successful"
+            )
+
+            return context.res.text(
+                challenge or ""
+            )
+
+        return context.res.text(
+            "Forbidden",
+            403
+        )
 
 
     # -------------------------
-    # Incoming WhatsApp message
+    # Only POST
     # -------------------------
 
     if context.req.method != "POST":
-        return context.res.text("Method Not Allowed", 405)
+
+        return context.res.text(
+            "Method Not Allowed",
+            405
+        )
 
 
     try:
+
+        # -------------------------
+        # Parse WhatsApp event
+        # -------------------------
 
         body = context.req.body_json or {}
 
@@ -122,22 +224,35 @@ def main(context):
             .get("messages", [None])[0]
         )
 
-        # Ignore status updates and other webhook events
+
+        # Ignore status updates
         if not message:
-            return context.res.text("EVENT_RECEIVED", 200)
+
+            return context.res.text(
+                "EVENT_RECEIVED",
+                200
+            )
 
 
-        # Only handle text messages
+        # Only text messages
         if message.get("type") != "text":
-            return context.res.text("EVENT_RECEIVED", 200)
+
+            return context.res.text(
+                "EVENT_RECEIVED",
+                200
+            )
 
 
         user_number = message.get("from")
+
         user_message = (
-            message.get("text", {})
+            message
+            .get("text", {})
             .get("body", "")
             .strip()
         )
+
+        whatsapp_message_id = message.get("id")
 
 
         context.log(
@@ -146,22 +261,87 @@ def main(context):
 
 
         # -------------------------
-        # Send message to Azure AI
+        # Appwrite database
+        # -------------------------
+
+        tables_db = get_appwrite_database(context)
+
+
+        # -------------------------
+        # Get previous history
+        # -------------------------
+
+        history = get_chat_history(
+            tables_db,
+            user_number
+        )
+
+
+        # -------------------------
+        # Save user message
+        # -------------------------
+
+        save_message(
+            tables_db,
+            user_number,
+            "user",
+            user_message,
+            whatsapp_message_id
+        )
+
+
+        # -------------------------
+        # Build AI conversation
+        # -------------------------
+
+        ai_input = []
+
+        for item in history:
+
+            ai_input.append({
+                "role": item["role"],
+                "content": item["message"]
+            })
+
+
+        ai_input.append({
+            "role": "user",
+            "content": user_message
+        })
+
+
+        # -------------------------
+        # Send history to Azure AI
         # -------------------------
 
         response = openai_client.responses.create(
             model=AZURE_DEPLOYMENT,
-            input=user_message
+            input=ai_input
         )
 
         ai_reply = response.output_text.strip()
 
 
-        context.log(f"AI reply: {ai_reply}")
+        context.log(
+            f"AI reply: {ai_reply}"
+        )
 
 
         # -------------------------
-        # Send AI reply to WhatsApp
+        # Save AI reply
+        # -------------------------
+
+        save_message(
+            tables_db,
+            user_number,
+            "assistant",
+            ai_reply,
+            f"assistant-{whatsapp_message_id}"
+        )
+
+
+        # -------------------------
+        # Send reply to WhatsApp
         # -------------------------
 
         send_whatsapp_message(
