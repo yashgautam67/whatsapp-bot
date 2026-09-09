@@ -17,7 +17,7 @@ AZURE_ENDPOINT = os.environ.get(
 
 AZURE_DEPLOYMENT = os.environ.get(
     "AZURE_AI_DEPLOYMENT",
-    "gpt-5-mini"
+    "gpt-5.6-luna"
 )
 
 token_provider = get_bearer_token_provider(
